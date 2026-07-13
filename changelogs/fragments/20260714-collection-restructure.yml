@@ -1,0 +1,30 @@
+---
+major_changes:
+  - >-
+    Restructured into a proper Ansible collection layout
+    (``galaxy.yml``, ``plugins/modules/``, ``roles/cac_export``,
+    ``roles/apply_dispatch``, ``meta/runtime.yml``) matching
+    ``infra.aap_configuration``'s layout. The three modules moved from
+    ``library/`` to ``plugins/modules/`` and must now be referenced by FQCN
+    (``kushalsankhe.cac_export.aap_export_bulk``, etc.) or via the
+    ``cac_export``/``apply_dispatch`` roles. ``playbooks/export_bulk.yml``
+    and ``playbooks/apply_dispatch.yml`` still work as before but are now
+    thin wrappers around the two roles.
+bugfixes:
+  - >-
+    Moving ``organization_filter`` handling into the role's ``defaults``
+    (defaulting to ``null`` instead of Ansible's ``omit`` placeholder token)
+    removed the footgun where ``organization_filter is defined`` read as
+    truthy even on no-filter runs, since ``omit`` is itself a non-empty
+    string. Export summaries were previously exposed to this; the role now
+    checks ``organization_filter is not none`` instead.
+known_issues:
+  - >-
+    ``gateway_settings`` is still discovered twice by
+    ``aap_discover_components.py`` - once as the ``/settings/``
+    category-listing endpoint and once as the real ``/settings/all/`` dict -
+    and both currently map to the same dispatch var, so whichever discovery
+    entry runs last silently wins. Not yet fixed; see
+    ``roles/cac_export/vars/dispatch_component_map.yml``'s note on
+    ``gateway_settings`` for the same fix already applied to
+    ``controller_settings``.

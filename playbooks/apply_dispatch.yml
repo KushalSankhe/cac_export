@@ -1,0 +1,18 @@
+---
+# playbooks/apply_dispatch.yml
+#
+# Thin, ready-to-run entry point around roles/apply_dispatch. See
+# roles/apply_dispatch/tasks/main.yml for what it does.
+#
+# Usage:
+#   ansible-playbook kushalsankhe.cac_export.apply_dispatch \
+#     -e "output_dir=/cac/sbx" \
+#     -e "aap_hostname=https://aap-target.example.com" \
+#     -e "aap_username=admin" -e "aap_password=..."
+
+- name: Apply exported AAP configuration via infra.aap_configuration.dispatch
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - kushalsankhe.cac_export.apply_dispatch

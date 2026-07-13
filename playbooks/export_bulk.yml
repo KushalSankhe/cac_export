@@ -1,0 +1,21 @@
+---
+# playbooks/export_bulk.yml
+#
+# Thin, ready-to-run entry point around roles/cac_export. If you're wiring
+# this into your own playbook/workflow instead, skip this file and just:
+#   - ansible.builtin.include_role:
+#       name: kushalsankhe.cac_export.cac_export
+# with whatever vars you need (see README.md for the full list).
+#
+# Usage:
+#   ansible-playbook kushalsankhe.cac_export.export_bulk \
+#     -e "controller_host=https://aap.example.com" \
+#     -e "controller_oauthtoken=..." \
+#     -e "output_dir=/cac/sbx"
+
+- name: Discover and bulk export ALL AAP CaC components (auto-discovered, no filetree_create)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - kushalsankhe.cac_export.cac_export

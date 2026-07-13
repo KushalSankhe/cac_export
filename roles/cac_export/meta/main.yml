@@ -1,0 +1,15 @@
+---
+galaxy_info:
+  role_name: cac_export
+  author: Kushal Sankhe
+  description: >-
+    Auto-discovers and bulk-exports AAP Configuration-as-Code (Controller,
+    Gateway, EDA, Hub) to dispatch_ready/ YAML, in one process per component
+    (no filetree_create subprocess-forking).
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - all
+dependencies: []

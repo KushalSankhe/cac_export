@@ -1,0 +1,343 @@
+---
+# dispatch_component_map
+#
+# Maps each component this collection exports (top-level key in
+# <output_dir>/<component>.yml) to the variable name infra.aap_configuration's
+# `dispatch` role actually expects, so a transform step can bridge our
+# endpoint-named flat export to a dispatch-ready var without touching
+# aap_export_bulk.py/aap_discover_components.py themselves.
+#
+# Verified 2026-07-13 against the published gateway_configuration_dispatcher_roles /
+# controller_configuration_dispatcher_roles / eda_configuration_dispatcher_roles lists
+# (redhat-cop.github.io/aap_config_as_code_docs), not reconstructed from memory.
+#
+# Schema per entry:
+#   used_in_dispatch: true   -> `var` is the dispatch variable to populate from this
+#                                component's exported list/dict.
+#   used_in_dispatch: false  -> NOT fed into dispatch_vars.yml. `reason` explains why:
+#                                either a genuine gap (no dispatch role covers it, or
+#                                the role exists but isn't wired into the default
+#                                dispatcher list), or this component is a duplicate of
+#                                another canonical source that IS used instead.
+
+# ---------------------------------------------------------------- Controller --
+instance_groups:
+  used_in_dispatch: true
+  var: controller_instance_groups
+
+settings:
+  used_in_dispatch: false
+  reason: >-
+    This is the /settings/ category-listing endpoint (a list of setting group
+    names), not actual key/value settings. Real settings come from the
+    controller_settings and gateway_settings dict-shape components below.
+
+organizations:
+  used_in_dispatch: false
+  reason: >-
+    Duplicate of gateway_organizations (orgs live in Gateway on AAP 2.5+;
+    Controller's /organizations/ mirrors the same data). gateway_organizations
+    is used as the canonical source for aap_organizations instead.
+
+users:
+  used_in_dispatch: false
+  reason: >-
+    Duplicate of gateway_users. There is also no controller_users role in
+    controller_configuration_dispatcher_roles's default list - user accounts are
+    only ever applied via gateway_users (var aap_user_accounts). gateway_users is
+    used as the canonical source instead.
+
+execution_environments:
+  used_in_dispatch: true
+  var: controller_execution_environments
+
+projects:
+  used_in_dispatch: true
+  var: controller_projects
+
+teams:
+  used_in_dispatch: false
+  reason: >-
+    Duplicate of gateway_teams, and there is no controller_teams role in the
+    default dispatcher list either. gateway_teams (var aap_teams) is the
+    canonical source instead.
+
+credentials:
+  used_in_dispatch: true
+  var: controller_credentials
+
+credential_types:
+  used_in_dispatch: true
+  var: controller_credential_types
+
+credential_input_sources:
+  used_in_dispatch: true
+  var: controller_credential_input_sources
+
+inventory:
+  used_in_dispatch: true
+  var: controller_inventories
+
+constructed_inventory:
+  used_in_dispatch: false
+  reason: >-
+    No distinct dispatch role/var for constructed inventories confirmed yet.
+    They may need to merge into controller_inventories with a `kind:
+    constructed` marker per the controller_inventories role's argspec - not
+    confirmed against live role docs, so left out rather than guessed.
+
+inventory_sources:
+  used_in_dispatch: true
+  var: controller_inventory_sources
+
+groups:
+  used_in_dispatch: true
+  var: controller_groups
+
+hosts:
+  used_in_dispatch: true
+  var: controller_hosts
+
+job_templates:
+  used_in_dispatch: true
+  var: controller_templates
+
+schedules:
+  used_in_dispatch: true
+  var: controller_schedules
+
+notification_templates:
+  used_in_dispatch: true
+  var: controller_notifications
+
+labels:
+  used_in_dispatch: true
+  var: controller_labels
+
+workflow_job_templates:
+  used_in_dispatch: true
+  var: controller_workflows
+
+workflow_job_template_nodes:
+  used_in_dispatch: false
+  reason: >-
+    No standalone dispatch role/var. controller_workflows expects each
+    workflow's nodes nested under that workflow's own `workflow_nodes` key, not
+    as a separate top-level list. A straight key rename would produce a var
+    dispatch doesn't read at all - this needs a real join-by-workflow-id
+    reshape, which is a bigger job than this transform step does today.
+
+role_definitions:
+  used_in_dispatch: false
+  reason: >-
+    controller_role_definitions role exists in infra.aap_configuration but is
+    NOT included in the default controller_configuration_dispatcher_roles list.
+    Would need an aap_configuration_dispatcher_roles override to add it in.
+
+role_user_assignments:
+  used_in_dispatch: false
+  reason: >-
+    controller_role_user_assignments role exists but is not in the default
+    dispatcher list either - same situation as role_definitions above.
+
+role_team_assignments:
+  used_in_dispatch: false
+  reason: >-
+    controller_role_team_assignments role exists but is not in the default
+    dispatcher list either - same situation as role_definitions above.
+
+controller_settings:
+  used_in_dispatch: true
+  var: controller_settings
+
+# ------------------------------------------------------------------- Gateway --
+gateway_applications:
+  used_in_dispatch: true
+  var: aap_applications
+
+gateway_authenticator_maps:
+  used_in_dispatch: true
+  var: gateway_authenticator_maps
+
+gateway_authenticator_plugins:
+  used_in_dispatch: false
+  reason: >-
+    Read-only catalog of available authenticator plugin *types* shipped with
+    Gateway, not a configurable role input - there is no dispatch role for it.
+
+gateway_authenticator_users:
+  used_in_dispatch: false
+  reason: >-
+    No dispatch role. Appears to be a runtime join/state view of which users
+    came in through which authenticator, not something you declare as config.
+
+gateway_authenticators:
+  used_in_dispatch: true
+  var: gateway_authenticators
+
+gateway_ca_certificates:
+  used_in_dispatch: false
+  reason: "No dispatch role covers CA certificates yet - confirmed gap."
+
+gateway_organizations:
+  used_in_dispatch: true
+  var: aap_organizations
+
+gateway_role_definitions:
+  used_in_dispatch: true
+  var: gateway_role_definitions
+
+gateway_role_team_assignments:
+  used_in_dispatch: true
+  var: gateway_role_team_assignments
+
+gateway_role_user_assignments:
+  used_in_dispatch: true
+  var: gateway_role_user_assignments
+
+gateway_settings:
+  used_in_dispatch: true
+  var: gateway_settings
+  note: >-
+    HEADS UP (found 2026-07-13, not fixed yet): aap_discover_components.py
+    currently gives both the /settings/ category-listing component AND the
+    /settings/all/ dict-shape component the exact same name "gateway_settings"
+    (unlike Controller, where the dict-shape one was deliberately renamed to
+    "controller_settings" to avoid this). Both write to the same
+    gateway_settings.yml, so whichever runs second silently overwrites the
+    first. In the sbx run this happened to land in our favor - the dict-shape
+    "all settings" export ran last, so gateway_settings.yml today does contain
+    the right (dict) shape for this dispatch var - but that's an accident of
+    task ordering, not a guarantee. Worth a real fix (rename one of them,
+    same pattern as controller_settings) before relying on this long-term.
+
+gateway_teams:
+  used_in_dispatch: true
+  var: aap_teams
+
+gateway_users:
+  used_in_dispatch: true
+  var: aap_user_accounts
+
+# ---------------------------------------------------------------------- EDA --
+eda_project:
+  used_in_dispatch: true
+  var: eda_projects
+
+eda_activation:
+  used_in_dispatch: true
+  var: eda_rulebook_activations
+
+eda_user:
+  used_in_dispatch: false
+  reason: >-
+    eda_users role exists in infra.aap_configuration but is NOT included in
+    the default eda_configuration_dispatcher_roles list.
+
+eda_credentialtype:
+  used_in_dispatch: true
+  var: eda_credential_types
+
+eda_edacredential:
+  used_in_dispatch: true
+  var: eda_credentials
+
+eda_credentialinputsource:
+  used_in_dispatch: false
+  reason: >-
+    eda_credential_input_sources role exists but is not in the default
+    eda_configuration_dispatcher_roles list either.
+
+eda_decisionenvironment:
+  used_in_dispatch: true
+  var: eda_decision_environments
+
+eda_organization:
+  used_in_dispatch: false
+  reason: >-
+    Informational only - EDA organizations are the same Gateway-backed orgs
+    already covered by gateway_organizations -> aap_organizations. Not merged
+    in, to avoid double-processing identical data through two paths.
+
+eda_team:
+  used_in_dispatch: false
+  reason: >-
+    Informational only, same reasoning as eda_organization - already covered
+    by gateway_teams -> aap_teams.
+
+eda_eventstream:
+  used_in_dispatch: true
+  var: eda_event_streams
+
+# --------------------------------------------------------------------- Hub --
+# All Hub gaps below are the SAME real gap already called out in CLAUDE.md
+# milestone 9/14 (Hub v1 export scope) - confirmed against the published
+# hub_configuration_dispatcher_roles list, not re-derived here.
+hub_access_policies:
+  used_in_dispatch: false
+  reason: "No dispatch role for Pulp access policies. Confirmed gap - deferred, per your call to look at Hub later."
+
+hub_contentguards_composite:
+  used_in_dispatch: false
+  reason: "No dispatch role for any contentguards/* type. Confirmed gap - deferred."
+
+hub_contentguards_content_redirect:
+  used_in_dispatch: false
+  reason: "No dispatch role for any contentguards/* type. Confirmed gap - deferred."
+
+hub_contentguards_header:
+  used_in_dispatch: false
+  reason: "No dispatch role for any contentguards/* type. Confirmed gap - deferred."
+
+hub_contentguards_rbac:
+  used_in_dispatch: false
+  reason: "No dispatch role for any contentguards/* type. Confirmed gap - deferred."
+
+hub_contentguards_rhsm:
+  used_in_dispatch: false
+  reason: "No dispatch role for any contentguards/* type. Confirmed gap - deferred."
+
+hub_contentguards_x509:
+  used_in_dispatch: false
+  reason: "No dispatch role for any contentguards/* type. Confirmed gap - deferred."
+
+hub_namespaces_ansible:
+  used_in_dispatch: true
+  var: hub_namespaces
+
+hub_remotes_ansible_collection:
+  used_in_dispatch: true
+  var: hub_collection_remotes
+
+hub_remotes_ansible_git:
+  used_in_dispatch: false
+  reason: >-
+    hub_collection_remote only covers ansible-collection-type remotes in the
+    dispatcher list - no role for git-type collection remotes specifically.
+
+hub_remotes_ansible_role:
+  used_in_dispatch: false
+  reason: "No dispatch role for role-type remotes."
+
+hub_namespaces_container:
+  used_in_dispatch: false
+  reason: >-
+    Container namespaces have no direct dispatch role - container config goes
+    through hub_ee_registry/hub_ee_repository instead, which is a materially
+    different shape (registry + repo, not a bare namespace). Needs a real
+    transform, not a key rename.
+
+hub_remotes_container_pull_through:
+  used_in_dispatch: false
+  reason: >-
+    Conceptually closest to hub_ee_registry, but the shape differs enough that
+    a straight rename would silently produce a wrong/incomplete var rather than
+    erroring - left out until that mapping is actually built and verified.
+
+hub_remotes_container:
+  used_in_dispatch: false
+  reason: "Same as hub_remotes_container_pull_through above."
+
+hub_remotes_file:
+  used_in_dispatch: false
+  reason: "No dispatch role for file-type remotes."

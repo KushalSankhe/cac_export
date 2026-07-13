@@ -1,0 +1,26 @@
+---
+# roles/apply_dispatch/tasks/main.yml
+#
+# Same pattern filetree_read + dispatch already use: include_vars over a
+# directory of one-var-per-file YAMLs, then hand the lot to dispatch. Nothing
+# is transformed here - dispatch_ready/ already exists by the time this runs
+# (built by kushalsankhe.cac_export.cac_export).
+#
+# Requires: infra.aap_configuration collection installed
+#   (ansible-galaxy collection install infra.aap_configuration)
+
+- name: Assert output_dir is set
+  ansible.builtin.assert:
+    that: output_dir is defined and output_dir | length > 0
+    fail_msg: >-
+      output_dir is required - pass the same directory cac_export wrote
+      dispatch_ready/ into.
+    quiet: true
+
+- name: Load every dispatch-ready var from dispatch_ready/
+  ansible.builtin.include_vars:
+    dir: "{{ output_dir }}/dispatch_ready"
+
+- name: Apply configuration via dispatch
+  ansible.builtin.include_role:
+    name: infra.aap_configuration.dispatch

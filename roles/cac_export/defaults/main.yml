@@ -1,0 +1,80 @@
+---
+# Public interface of this role - every var here is safe to override when you
+# `include_role: name: kushalsankhe.cac_export.cac_export`. See README.md for
+# the full description of each. Vars with no sane default (controller_host,
+# credentials) are left null on purpose and asserted on in tasks/main.yml -
+# there is no meaningful default for "which AAP am I talking to."
+
+controller_host: null
+controller_oauthtoken: null
+controller_username: null
+controller_password: null
+gateway_host: null
+eda_host: null
+hub_host: null
+validate_certs: true
+
+# Service-level scoping (was milestone 10). One list instead of three separate
+# booleans. "controller" in the list is accepted but a no-op - Controller has
+# no toggle and can't be excluded.
+services: [controller, gateway, eda]
+
+# include_gateway/include_eda/include_hub still work exactly as before if set
+# explicitly - they take precedence over `services`. Only when one of them is
+# NOT set does its value fall back to "is this service in `services`."
+include_gateway: "{{ 'gateway' in services }}"
+include_eda: "{{ 'eda' in services }}"
+include_hub: "{{ 'hub' in services }}"
+include_inventory_content: false
+
+page_size: 200
+
+# Full default set aap_build_id_maps.py's MAP_TYPE_CONFIG knows how to build.
+# Kept here (not just left to the module's own default) so eda_-scoped map
+# types can be trimmed when EDA discovery is off. Update if MAP_TYPE_CONFIG
+# ever gains/loses an entry - nothing breaks if this drifts slightly stale.
+all_map_types:
+  - organizations
+  - credential_types
+  - execution_environments
+  - inventories
+  - projects
+  - credentials
+  - labels
+  - instance_groups
+  - users
+  - teams
+  - eda_organizations
+  - eda_credential_types
+  - eda_decision_environments
+  - eda_credentials
+  - eda_projects
+
+# Explicit id_map_types always wins outright and skips the eda_ trimming
+# below entirely.
+id_map_types: null
+
+fail_on_unresolved_fk: true
+
+output_dir: "/cac/{{ target_env | default('default') }}"
+
+# Components marked used_in_dispatch: false in vars/dispatch_component_map.yml
+# are SKIPPED (no API call at all) by default. Set true to still fetch them,
+# written to excluded_or_informational/ for reference - never mixed into
+# dispatch_ready/.
+export_excluded_components: false
+
+organization_filter: null
+
+secrets_as_variables: true
+secrets_as_variables_prefix: vaulted
+yaml_mark_unsafe_templates: true
+
+# Single-object filters (was milestone 13). Each is a no-op unless its var is
+# actually set.
+project_id: null
+job_template_id: null
+inventory_id: null
+workflow_job_template_id: null
+schedule_id: null
+label_filter: null

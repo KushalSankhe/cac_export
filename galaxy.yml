@@ -1,0 +1,25 @@
+namespace: kushalsankhe
+name: cac_export
+version: 1.0.0
+readme: README.md
+authors:
+  - Kushal Sankhe
+description: >-
+  Bulk, auto-discovering export of AAP Configuration-as-Code (Controller +
+  Gateway + EDA + Hub) to reimport-ready YAML, without infra.aap_configuration_extended's
+  filetree_create subprocess/PID-forking bug on large instances.
+license:
+  - GPL-3.0-or-later
+tags:
+  - ansible_automation_platform
+  - aap
+  - controller
+  - gateway
+  - eda
+  - configuration_as_code
+repository: https://github.com/kushalsankhe/cac_export
+issues: https://github.com/kushalsankhe/cac_export/issues
+build_ignore:
+  - '*.tar.gz'
+  - .git
+  - .gitignore

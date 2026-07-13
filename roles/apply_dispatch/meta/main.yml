@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: apply_dispatch
+  author: Kushal Sankhe
+  description: >-
+    Loads dispatch_ready/ (written by cac_export) and applies it via
+    infra.aap_configuration.dispatch.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - all
+dependencies: []

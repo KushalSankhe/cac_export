@@ -1,0 +1,291 @@
+---
+# roles/cac_export/tasks/main.yml
+#
+# Discovers exportable CaC endpoints directly from AAP's own API root(s) -
+# Controller (/api/controller/v2/), Gateway (/api/gateway/v1/), EDA
+# (/api/eda/v1/, AAP 2.5+), and optionally Hub/Galaxy
+# (/api/galaxy/pulp/api/v3/, AAP 2.5+, off by default - see include_hub) -
+# then exports every non-runtime object found. No hardcoded component list:
+# this adapts automatically if a future AAP version adds/renames an endpoint.
+
+- name: Assert required connection vars are set
+  ansible.builtin.assert:
+    that:
+      - controller_host is not none
+      - (controller_oauthtoken is not none) or
+        (controller_username is not none and controller_password is not none)
+    fail_msg: >-
+      controller_host is required, plus either controller_oauthtoken or
+      controller_username+controller_password. See README.md.
+    quiet: true
+
+- name: Compute internal connection/auth vars (None -> omit for module calls)
+  ansible.builtin.set_fact:
+    _cac_token: "{{ controller_oauthtoken if controller_oauthtoken is not none else omit }}"
+    _cac_username: "{{ controller_username if controller_username is not none else omit }}"
+    _cac_password: "{{ controller_password if controller_password is not none else omit }}"
+    _cac_gateway_host: "{{ gateway_host if gateway_host is not none else omit }}"
+    _cac_eda_host: "{{ eda_host if eda_host is not none else omit }}"
+    _cac_hub_host: "{{ hub_host if hub_host is not none else omit }}"
+    _cac_export_dir: "{{ output_dir }}"
+    # Trim eda_-prefixed map types out of the default set when include_eda is
+    # false, so a run against an environment with no EDA root doesn't burn API
+    # calls that always fail. No hub_-prefixed map types exist yet.
+    _cac_map_types: >-
+      {{ id_map_types
+         if id_map_types is not none
+         else (all_map_types | reject('match', '^eda_') | list if not (include_eda | bool) else all_map_types) }}
+
+- name: Ensure CaC export directory exists
+  ansible.builtin.file:
+    path: "{{ _cac_export_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Ensure dispatch_ready/ exists (writes land here directly, no rename pass after)
+  ansible.builtin.file:
+    path: "{{ _cac_export_dir }}/dispatch_ready"
+    state: directory
+    mode: "0755"
+
+- name: Ensure excluded_or_informational/ exists (only used when export_excluded_components is true)
+  ansible.builtin.file:
+    path: "{{ _cac_export_dir }}/excluded_or_informational"
+    state: directory
+    mode: "0755"
+  when: export_excluded_components
+
+- name: Ensure unmapped/ exists (components discovered but not yet in dispatch_component_map.yml)
+  ansible.builtin.file:
+    path: "{{ _cac_export_dir }}/unmapped"
+    state: directory
+    mode: "0755"
+
+- name: Warn on unrecognized or incomplete services list
+  ansible.builtin.debug:
+    msg: >-
+      {% set known = ['controller', 'gateway', 'eda', 'hub'] %}
+      {% set unknown = services | difference(known) %}
+      {% if unknown | length > 0 %}
+      WARNING: services contains unrecognized value(s) {{ unknown }} - only
+      {{ known }} are recognized; unrecognized entries are ignored.
+      {% endif %}
+      {% if 'controller' not in services %}
+      NOTE: "controller" was not in services, but Controller export cannot be
+      disabled - Controller components will be exported anyway.
+      {% endif %}
+  when: >-
+    (services | difference(['controller', 'gateway', 'eda', 'hub']) | length > 0)
+    or ('controller' not in services)
+
+- name: Discover exportable components from Controller + Gateway + EDA + Hub API roots
+  aap_discover_components:
+    controller_host: "{{ controller_host }}"
+    gateway_host: "{{ _cac_gateway_host }}"
+    controller_oauthtoken: "{{ _cac_token }}"
+    controller_username: "{{ _cac_username }}"
+    controller_password: "{{ _cac_password }}"
+    validate_certs: "{{ validate_certs }}"
+    include_gateway: "{{ include_gateway }}"
+    eda_host: "{{ _cac_eda_host }}"
+    include_eda: "{{ include_eda }}"
+    include_inventory_content: "{{ include_inventory_content }}"
+    hub_host: "{{ _cac_hub_host }}"
+    include_hub: "{{ include_hub }}"
+  register: discovery
+
+- name: Show what was discovered vs excluded
+  ansible.builtin.debug:
+    msg:
+      - "Discovered {{ discovery.components | length }} exportable components:"
+      - "{{ discovery.components | map(attribute='name') | list }}"
+      - "Excluded (runtime/meta, not CaC-relevant): {{ discovery.excluded }}"
+
+# Loaded from the role's own vars/, not the caller's - name: is required:
+# without it include_vars loads the file's top-level keys as separate
+# top-level Ansible vars instead of one dispatch_component_map dict.
+- name: Load the component -> dispatch-var mapping table
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/vars/dispatch_component_map.yml"
+    name: dispatch_component_map
+
+- name: Split discovered components by their dispatch_component_map entry
+  ansible.builtin.set_fact:
+    dispatch_components: "{{ discovery.components | selectattr('name', 'in', dispatch_component_map.keys() | select('in', _used_names) | list) | list }}"
+    excluded_components: "{{ discovery.components | selectattr('name', 'in', dispatch_component_map.keys() | select('in', _excluded_names) | list) | list }}"
+    unmapped_components: "{{ discovery.components | rejectattr('name', 'in', dispatch_component_map.keys() | list) | list }}"
+  vars:
+    _used_names: "{{ dispatch_component_map | dict2items | selectattr('value.used_in_dispatch') | map(attribute='key') | list }}"
+    _excluded_names: "{{ dispatch_component_map | dict2items | rejectattr('value.used_in_dispatch') | map(attribute='key') | list }}"
+
+- name: Show the component split
+  ansible.builtin.debug:
+    msg:
+      - "Dispatch-ready ({{ dispatch_components | length }}): {{ dispatch_components | map(attribute='name') | list | sort }}"
+      - "Excluded, not fetched unless export_excluded_components=true ({{ excluded_components | length }}): {{ excluded_components | map(attribute='name') | list | sort }}"
+      - "{{ 'Unmapped - discovered but not in dispatch_component_map.yml yet, exporting to unmapped/ (' ~ (unmapped_components | length) ~ '): ' ~ (unmapped_components | map(attribute='name') | list | sort) if unmapped_components | length > 0 else 'Unmapped: none - dispatch_component_map.yml covers every discovered component.' }}"
+
+- name: Build id -> name lookup maps for FK resolution
+  aap_build_id_maps:
+    controller_host: "{{ controller_host }}"
+    gateway_host: "{{ _cac_gateway_host }}"
+    eda_host: "{{ _cac_eda_host }}"
+    controller_oauthtoken: "{{ _cac_token }}"
+    controller_username: "{{ _cac_username }}"
+    controller_password: "{{ _cac_password }}"
+    validate_certs: "{{ validate_certs }}"
+    map_types: "{{ _cac_map_types }}"
+  register: id_map_result
+
+- name: Show any id map build issues (non-fatal)
+  ansible.builtin.debug:
+    msg: "id_maps build issues: {{ id_map_result.errors }}"
+  when: id_map_result.errors | length > 0
+
+- name: Export each discovered component
+  aap_export_bulk:
+    controller_host: "{{ controller_host }}"
+    gateway_host: "{{ _cac_gateway_host }}"
+    eda_host: "{{ _cac_eda_host }}"
+    hub_host: "{{ _cac_hub_host }}"
+    api_root: "{{ item.api_root }}"
+    controller_oauthtoken: "{{ _cac_token }}"
+    controller_username: "{{ _cac_username }}"
+    controller_password: "{{ _cac_password }}"
+    validate_certs: "{{ validate_certs }}"
+    component_name: "{{ item.name }}"
+    explicit_path: "{{ item.path }}"
+    object_shape: "{{ 'dict' if (item.kind | default('list')) == 'settings' else 'list' }}"
+    # Destination decided by the split above, computed once here per item -
+    # see README for the mapped/excluded/unmapped destination rules.
+    output_path: >-
+      {{ _cac_export_dir }}/{{
+        'dispatch_ready/' ~ dispatch_component_map[item.name].var
+        if (item.name in dispatch_component_map and dispatch_component_map[item.name].used_in_dispatch)
+        else ('excluded_or_informational/' ~ item.name if item.name in dispatch_component_map else 'unmapped/' ~ item.name)
+      }}.yml
+    # Single expression on purpose (not embedded in a longer templated
+    # string) - that's the only form Ansible's omit sentinel actually works
+    # in.
+    output_var_name: >-
+      {{ dispatch_component_map[item.name].var
+         if (item.name in dispatch_component_map and dispatch_component_map[item.name].used_in_dispatch)
+         else omit }}
+    organization_filter: "{{ organization_filter if ((item.kind | default('list')) != 'settings' and organization_filter is not none) else omit }}"
+    extra_query_params: "{{ single_object_filter_map[item.name] | default({}) }}"
+    page_size: "{{ page_size }}"
+    id_maps: "{{ id_map_result.id_maps }}"
+    secrets_as_variables: "{{ secrets_as_variables }}"
+    secrets_as_variables_prefix: "{{ secrets_as_variables_prefix }}"
+    yaml_mark_unsafe_templates: "{{ yaml_mark_unsafe_templates }}"
+  loop: "{{ dispatch_components + unmapped_components + (excluded_components if export_excluded_components else []) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    single_object_filter_map:
+      projects: "{{ {'id': project_id} if project_id is not none else {} }}"
+      job_templates: "{{ {'id': job_template_id} if job_template_id is not none else {} }}"
+      inventory: "{{ {'id': inventory_id} if inventory_id is not none else {} }}"
+      workflow_job_templates: "{{ {'id': workflow_job_template_id} if workflow_job_template_id is not none else {} }}"
+      schedules: "{{ {'id': schedule_id} if schedule_id is not none else {} }}"
+      labels: "{{ {'name': label_filter} if label_filter is not none else {} }}"
+  register: export_results
+  ignore_errors: true
+
+- name: Show export summary
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.name }}:
+      {% if item.failed | default(false) %}FAILED - {{ item.msg }}
+      {% elif item.skipped | default(false) %}SKIPPED (not applicable) - {{ item.reason }}
+      {% elif organization_filter is not none and not (item.org_filter_applied | default(true)) %}
+      OK - {{ item.count }} objects exported (NOTE: this object type has no organization
+      field, so ALL organizations' data is included, not just "{{ organization_filter }}")
+      {% else %}OK - {{ item.count }} objects exported{% endif %}
+      {% if item.unresolved_fk_count | default(0) > 0 %}
+      [WARNING: {{ item.unresolved_fk_count }} foreign-key value(s) could not be
+      resolved to a name and were left as raw ids - check id_maps coverage]
+      {% endif %}
+      {% if item.secrets_replaced_count | default(0) > 0 %}
+      [{{ item.secrets_replaced_count }} encrypted field(s) rewritten to vaulted
+      variable references - see vaulted_vars_template.yml]
+      {% endif %}
+      {% if item.unsafe_templates_tagged | default(0) > 0 %}
+      [{{ item.unsafe_templates_tagged }} Jinja-looking value(s) in extra_vars/
+      extra_data/source_vars/variables/survey_spec tagged !unsafe to prevent
+      re-templating on reimport]
+      {% endif %}
+  loop: "{{ export_results.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Collect every vaulted-secret variable name created across the whole export
+  ansible.builtin.set_fact:
+    all_vaulted_vars: >-
+      {{ export_results.results
+         | selectattr('secret_vars', 'defined')
+         | map(attribute='secret_vars')
+         | sum(start=[])
+         | unique | sort }}
+  when: secrets_as_variables
+
+- name: Write the vaulted-secrets template file
+  ansible.builtin.copy:
+    dest: "{{ _cac_export_dir }}/vaulted_vars_template.yml"
+    mode: "0600"
+    content: |
+      ---
+      # One entry per "$encrypted$" field found during export.
+      # Fill in the REAL values below, then `ansible-vault encrypt` this file before
+      # using it as an extra-vars source for reimport. Do NOT commit it unencrypted.
+      {% for var_name in all_vaulted_vars %}
+      {{ var_name }}: "CHANGEME"
+      {% endfor %}
+  when:
+    - secrets_as_variables
+    - all_vaulted_vars | default([]) | length > 0
+
+- name: Show how many vaulted secret variables need filling in
+  ansible.builtin.debug:
+    msg: >-
+      {{ all_vaulted_vars | default([]) | length }} vaulted secret variable(s)
+      written to {{ _cac_export_dir }}/vaulted_vars_template.yml - fill in real
+      values and ansible-vault encrypt that file before using this export for a
+      real reimport.
+  when: secrets_as_variables
+
+- name: Show dispatch_ready/ contents from this run
+  ansible.builtin.find:
+    paths: "{{ _cac_export_dir }}/dispatch_ready"
+    patterns: ['*.yml']
+  register: _dispatch_ready_files
+
+- name: Show dispatch_ready/ summary
+  ansible.builtin.debug:
+    msg: "dispatch_ready/ contains {{ _dispatch_ready_files.files | length }} file(s): {{ _dispatch_ready_files.files | map(attribute='path') | map('basename') | list | sort }}"
+
+# Both fail: tasks run AFTER dispatch_ready/ is built and summarized above, on
+# purpose - a human re-running by hand gets partial, inspectable output
+# instead of nothing, and can judge whether specific unresolved FKs / failed
+# components actually block their reimport.
+- name: Fail the play if unresolved FK references exist anywhere (portability check)
+  ansible.builtin.fail:
+    msg: >-
+      {{ export_results.results | selectattr('unresolved_fk_count', 'defined')
+      | selectattr('unresolved_fk_count') | map(attribute='item.name') | list }}
+      have unresolved foreign-key references. The exported YAML for these components
+      still contains raw ids instead of names and will NOT import cleanly on a
+      different AAP instance. dispatch_ready/ still reflects this data as-is, raw
+      ids included. Set fail_on_unresolved_fk: false to export anyway.
+  when:
+    - fail_on_unresolved_fk
+    - export_results.results | selectattr('unresolved_fk_count', 'defined')
+      | selectattr('unresolved_fk_count') | list | length > 0
+
+- name: Fail the play if any component export hit a REAL error (not a 404 skip)
+  ansible.builtin.fail:
+    msg: >-
+      The following components failed with real errors (auth/permission/server issues):
+      {{ export_results.results | selectattr('failed', 'defined') | selectattr('failed')
+      | map(attribute='item.name') | list }}
+  when: export_results.results | selectattr('failed', 'defined') | selectattr('failed') | list | length > 0
