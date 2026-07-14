@@ -19,14 +19,15 @@
       controller_username+controller_password. See README.md.
     quiet: true
 
-- name: Compute internal connection/auth vars (None -> omit for module calls)
+- name: Compute internal export-dir/map-type vars
+  # NOTE: controller_oauthtoken/username/password/gateway_host/eda_host/hub_host
+  # are deliberately NOT pre-computed here. `omit` only works when assigned
+  # directly to a module parameter at the point of that module's own call -
+  # set_fact is itself a module, so `set_fact: x: "{{ ... else omit }}"`
+  # silently never creates `x` at all when the else-branch fires, leaving it
+  # undefined for every later task that references it. Each module call below
+  # inlines the `if ... else omit` expression itself instead.
   ansible.builtin.set_fact:
-    _cac_token: "{{ controller_oauthtoken if controller_oauthtoken is not none else omit }}"
-    _cac_username: "{{ controller_username if controller_username is not none else omit }}"
-    _cac_password: "{{ controller_password if controller_password is not none else omit }}"
-    _cac_gateway_host: "{{ gateway_host if gateway_host is not none else omit }}"
-    _cac_eda_host: "{{ eda_host if eda_host is not none else omit }}"
-    _cac_hub_host: "{{ hub_host if hub_host is not none else omit }}"
     _cac_export_dir: "{{ output_dir }}"
     # Trim eda_-prefixed map types out of the default set when include_eda is
     # false, so a run against an environment with no EDA root doesn't burn API
@@ -81,16 +82,16 @@
 - name: Discover exportable components from Controller + Gateway + EDA + Hub API roots
   aap_discover_components:
     controller_host: "{{ controller_host }}"
-    gateway_host: "{{ _cac_gateway_host }}"
-    controller_oauthtoken: "{{ _cac_token }}"
-    controller_username: "{{ _cac_username }}"
-    controller_password: "{{ _cac_password }}"
+    gateway_host: "{{ gateway_host if gateway_host is not none else omit }}"
+    controller_oauthtoken: "{{ controller_oauthtoken if controller_oauthtoken is not none else omit }}"
+    controller_username: "{{ controller_username if controller_username is not none else omit }}"
+    controller_password: "{{ controller_password if controller_password is not none else omit }}"
     validate_certs: "{{ validate_certs }}"
     include_gateway: "{{ include_gateway }}"
-    eda_host: "{{ _cac_eda_host }}"
+    eda_host: "{{ eda_host if eda_host is not none else omit }}"
     include_eda: "{{ include_eda }}"
     include_inventory_content: "{{ include_inventory_content }}"
-    hub_host: "{{ _cac_hub_host }}"
+    hub_host: "{{ hub_host if hub_host is not none else omit }}"
     include_hub: "{{ include_hub }}"
   register: discovery
 
@@ -128,11 +129,11 @@
 - name: Build id -> name lookup maps for FK resolution
   aap_build_id_maps:
     controller_host: "{{ controller_host }}"
-    gateway_host: "{{ _cac_gateway_host }}"
-    eda_host: "{{ _cac_eda_host }}"
-    controller_oauthtoken: "{{ _cac_token }}"
-    controller_username: "{{ _cac_username }}"
-    controller_password: "{{ _cac_password }}"
+    gateway_host: "{{ gateway_host if gateway_host is not none else omit }}"
+    eda_host: "{{ eda_host if eda_host is not none else omit }}"
+    controller_oauthtoken: "{{ controller_oauthtoken if controller_oauthtoken is not none else omit }}"
+    controller_username: "{{ controller_username if controller_username is not none else omit }}"
+    controller_password: "{{ controller_password if controller_password is not none else omit }}"
     validate_certs: "{{ validate_certs }}"
     map_types: "{{ _cac_map_types }}"
   register: id_map_result
@@ -145,13 +146,13 @@
 - name: Export each discovered component
   aap_export_bulk:
     controller_host: "{{ controller_host }}"
-    gateway_host: "{{ _cac_gateway_host }}"
-    eda_host: "{{ _cac_eda_host }}"
-    hub_host: "{{ _cac_hub_host }}"
+    gateway_host: "{{ gateway_host if gateway_host is not none else omit }}"
+    eda_host: "{{ eda_host if eda_host is not none else omit }}"
+    hub_host: "{{ hub_host if hub_host is not none else omit }}"
     api_root: "{{ item.api_root }}"
-    controller_oauthtoken: "{{ _cac_token }}"
-    controller_username: "{{ _cac_username }}"
-    controller_password: "{{ _cac_password }}"
+    controller_oauthtoken: "{{ controller_oauthtoken if controller_oauthtoken is not none else omit }}"
+    controller_username: "{{ controller_username if controller_username is not none else omit }}"
+    controller_password: "{{ controller_password if controller_password is not none else omit }}"
     validate_certs: "{{ validate_certs }}"
     component_name: "{{ item.name }}"
     explicit_path: "{{ item.path }}"
