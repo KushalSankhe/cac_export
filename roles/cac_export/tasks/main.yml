@@ -179,6 +179,8 @@
     secrets_as_variables: "{{ secrets_as_variables }}"
     secrets_as_variables_prefix: "{{ secrets_as_variables_prefix }}"
     yaml_mark_unsafe_templates: "{{ yaml_mark_unsafe_templates }}"
+    skip_managed_objects: "{{ skip_managed_objects }}"
+    skip_system_usernames: "{{ skip_system_usernames }}"
   loop: "{{ dispatch_components + unmapped_components + (excluded_components if export_excluded_components else []) }}"
   loop_control:
     label: "{{ item.name }}"
@@ -215,6 +217,14 @@
       [{{ item.unsafe_templates_tagged }} Jinja-looking value(s) in extra_vars/
       extra_data/source_vars/variables/survey_spec tagged !unsafe to prevent
       re-templating on reimport]
+      {% endif %}
+      {% if item.skipped_managed_count | default(0) > 0 %}
+      [{{ item.skipped_managed_count }} Red-Hat-managed built-in(s) dropped -
+      already exist on target AAP; name references still resolve]
+      {% endif %}
+      {% if item.skipped_username_count | default(0) > 0 %}
+      [{{ item.skipped_username_count }} system username(s) dropped per
+      skip_system_usernames]
       {% endif %}
   loop: "{{ export_results.results }}"
   loop_control:

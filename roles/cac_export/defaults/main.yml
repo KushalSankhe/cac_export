@@ -70,6 +70,23 @@ secrets_as_variables: true
 secrets_as_variables_prefix: vaulted
 yaml_mark_unsafe_templates: true
 
+# Managed objects (Red Hat-shipped built-ins with managed: true) are SKIPPED
+# from the exported YAML by default - the target AAP instance will already have
+# identical copies of them, and every write endpoint that carries them rejects
+# re-application ("managed" / "read-only" / "Local custom roles can only
+# include view permission for shared models" errors). References to them by
+# name (e.g. organization: "Default", credential_type: "Machine") still
+# resolve on the target because that name exists there too. Flip to false only
+# for a full audit-style dump you don't intend to dispatch.
+skip_managed_objects: true
+
+# Extra usernames to skip on top of the managed filter. AAP's operator on
+# OpenShift creates these automatically and re-applying them from an export
+# either fails or clobbers the service-account state.
+skip_system_usernames:
+  - _token_service_user
+  - aap_operator_service_account
+
 # Single-object filters (was milestone 13). Each is a no-op unless its var is
 # actually set.
 project_id: null

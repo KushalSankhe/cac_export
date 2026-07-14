@@ -1,0 +1,60 @@
+---
+# 1.0.3 - Fixes for dispatch-side rejections rooted in noisy/read-only export
+# data. Concrete failures the previous export triggered on live AAP 2.6/2.7
+# apply, in the order they surfaced:
+#   - gateway_settings dispatch: "jwt_public_key is read-only by setting"
+#   - gateway_authenticators dispatch: "The authenticator you have picked is
+#     already configured to auto migrate users from a different authenticator"
+#     (built-in Local Database Authenticator, managed=true)
+#   - gateway_role_definitions dispatch: "Local custom roles can only include
+#     view permission for shared models" (Red-Hat-shipped roles, managed=true)
+#   - gateway_users: aap_operator_service_account/_token_service_user
+#     re-application clobbering operator-managed service accounts
+# Every one of these is now handled upstream at export time.
+
+minor_changes:
+  - >-
+    aap_export_bulk - massively expand STRIP_FIELDS to cover AAP 2.6+ audit
+    metadata (created_at/modified_at/edited_at/last_synced_at, created_by/
+    modified_by), runtime state (status, last_login*, restart_count,
+    rules_fired_count, capacity, etc.), source-env DB IDs that shadow
+    name-resolved FK fields (organization_id, project_id, credential_type_id,
+    decision_environment_id, rulebook_id, ...), deprecated user fields
+    (authenticator_uid, authenticators - superseded by
+    associated_authenticators), the 'managed' flag itself, and the
+    controller/gateway settings keys the write endpoint refuses (jwt_public_key,
+    jwt_private_key, LICENSE, INSTALL_UUID, IS_K8S, AUTOMATION_ANALYTICS_LAST_*,
+    CLEANUP_HOST_METRICS_LAST_TS, HOST_METRIC_SUMMARY_TASK_LAST_TS,
+    NAMED_URL_FORMATS, NAMED_URL_GRAPH_NODES). Grew from 10 entries to 82.
+  - >-
+    aap_export_bulk - new skip_managed_objects (default true) drops
+    Red-Hat-shipped built-ins (managed=true) from the export entirely.
+    References to them by name still resolve on the target because the same
+    name exists there; only the redundant re-application attempts (which the
+    write endpoints reject) are prevented. Set false for an audit-style dump
+    you don't intend to dispatch.
+  - >-
+    aap_export_bulk - new skip_system_usernames (list, default empty) drops
+    named users from the export. The cac_export role defaults this to
+    ['_token_service_user', 'aap_operator_service_account'] because the AAP
+    operator on OpenShift creates these automatically and re-applying them
+    from an export either fails or clobbers operator-managed state.
+  - >-
+    aap_export_bulk - the summary task in roles/cac_export/tasks/main.yml
+    now surfaces skipped_managed_count and skipped_username_count per
+    component alongside the existing unresolved_fk_count / secrets_replaced
+    _count / unsafe_templates_tagged counters, so it's visible from the run
+    log which objects were dropped and why.
+
+bugfixes:
+  - >-
+    aap_export_bulk - secrets_as_variables=False now empties $encrypted$
+    markers to '' instead of leaving them as the literal 12-character string
+    (matches infra.aap_configuration_extended.filetree_create). Previously
+    the false path was effectively a no-op for encrypted fields, silently
+    producing YAML that on reimport would set every credential/token/password
+    field's value to the literal string "$encrypted$" - not what any user of
+    the flag wanted. New helper blank_encrypted_markers walks the export
+    recursively and blanks the marker anywhere it appears, including inside
+    nested dicts/lists (credential inputs, notification tokens, gateway
+    authenticator client secrets, SOCIAL_AUTH_*_SECRET style setting keys).

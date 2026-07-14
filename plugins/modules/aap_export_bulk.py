@@ -198,6 +198,33 @@ options:
       (yaml.safe_load) will raise on the !unsafe tag. Set false to write plain strings
       instead (old behavior; only safe if you know reimport never templates these
       fields).
+  skip_managed_objects:
+    type: bool
+    default: true
+    description: >
+      When true (default), objects returned by the API with "managed": true are
+      dropped from the export before write. These are Red Hat-shipped built-ins
+      (Platform Auditor / Organization Admin role definitions, Machine / AWS /
+      Vault credential types, Default organization, rh-certified / community
+      collection remotes, Local Database Authenticator, ...) that exist
+      identically on every target AAP install; the write endpoints reject
+      re-application with errors like "Local custom roles can only include view
+      permission for shared models" or "The authenticator you have picked is
+      already configured to auto migrate users...". References to these objects
+      by name still resolve on the target because the same name exists there,
+      so dropping them from the export loses nothing downstream. Set to false
+      for a full audit-style dump you don't intend to dispatch.
+  skip_system_usernames:
+    type: list
+    elements: str
+    default: []
+    description: >
+      Usernames to drop from the export. Intended for accounts created
+      automatically by the AAP operator on OpenShift (_token_service_user,
+      aap_operator_service_account) that don't carry managed=true but are
+      equally not user-managed. Only checked on objects that carry a
+      'username' field, so passing a list here on non-user components is a
+      safe no-op.
 author: Kushal / CitiusCloud
 '''
 
@@ -259,6 +286,20 @@ unsafe_templates_tagged:
     yaml_mark_unsafe_templates was false or nothing matched.
   type: int
   returned: always
+skipped_managed_count:
+  description: >
+    Number of objects dropped from the export because they carried
+    "managed": true. Always 0 when skip_managed_objects is false or the
+    component's endpoint doesn't return managed objects (e.g. teams).
+  type: int
+  returned: always
+skipped_username_count:
+  description: >
+    Number of objects dropped from the export because their 'username' matched
+    an entry in skip_system_usernames. Always 0 when skip_system_usernames is
+    empty or the component isn't a user endpoint.
+  type: int
+  returned: always
 '''
 
 import json
@@ -317,11 +358,65 @@ API_PATHS = {
     "role_team_assignments": "/api/controller/v2/role_team_assignments/",
 }
 
-# Fields to strip from each object before writing to CaC YAML.
-# These are server-generated / instance-specific and shouldn't be tracked in CaC.
+# Fields to strip from each object before writing to CaC YAML. Everything here
+# is either server-generated (audit metadata, timestamps, primary keys), runtime
+# state (last_login, status, counters), or a duplicate of a name-resolved field
+# left over from FK resolution. Grouped for readability, but this is one flat
+# blocklist applied globally to every exported object at every nesting level
+# clean_object touches. Add here first when a new "read-only by setting" or
+# "cannot be modified" error surfaces on dispatch - almost always the fix.
 STRIP_FIELDS = [
-    "id", "url", "related", "summary_fields", "created", "modified",
-    "type", "custom_virtualenv", "job_tags_no_ui", "skip_tags_no_ui",
+    # --- server-assigned primary key + related links ---
+    "id", "url", "related", "summary_fields", "type", "prn", "pulp_href",
+
+    # --- AAP 2.6+ audit metadata (older 'created'/'modified' kept for pre-2.6) ---
+    "created", "modified",
+    "created_at", "modified_at", "edited_at", "last_synced_at",
+    "created_by", "modified_by", "edited_by",
+    "pulp_created", "pulp_last_updated",
+
+    # --- runtime state (jobs, projects, activations, inventories, IGs) ---
+    "last_login", "last_login_from", "last_login_results",
+    "last_job_run", "last_job_failed", "last_update_failed", "last_updated",
+    "next_job_run", "status", "status_message",
+    "scm_revision", "git_hash", "import_state", "import_error", "last_sync_task",
+    "restart_count", "rules_count", "rules_fired_count", "current_job_id",
+    "events_received", "last_event_received_at", "log_tracking_id",
+    "has_active_failures", "has_inventory_sources",
+    "hosts_with_active_failures", "inventory_sources_with_failures",
+    "total_groups", "total_hosts", "total_inventory_sources", "pending_deletion",
+    "capacity", "consumed_capacity", "instances",
+    "jobs_running", "jobs_total", "percent_capacity_remaining",
+    "hidden_fields", "references",
+
+    # --- source-env DB IDs that duplicate a name-resolved field ---
+    # clean_object writes the resolved name under the bare field name; these
+    # '_id' shadows are only useful during resolution and become cross-env-
+    # invalid junk once written to YAML.
+    "organization_id", "project_id", "credential_type_id",
+    "decision_environment_id", "rulebook_id", "eda_credential_id",
+    "signature_validation_credential_id", "rule_engine_credential_id",
+    "awx_token_id",
+
+    # --- deprecated user fields (superseded by associated_authenticators) ---
+    "authenticator_uid", "authenticators",
+
+    # --- 'managed' flag itself: stripped AFTER the skip_managed_objects filter
+    #     in main() has already used it, so it doesn't leak into the output
+    #     (dispatch treats it as an unknown field on some object types). ---
+    "managed",
+
+    # --- controller/gateway SETTINGS keys that /settings/all/ returns on GET
+    #     but the write endpoint rejects (server-computed or install-fixed).
+    #     Only settings ever have these keys, so a global entry is safe. ---
+    "jwt_public_key", "jwt_private_key",
+    "INSTALL_UUID", "LICENSE", "IS_K8S",
+    "AUTOMATION_ANALYTICS_LAST_GATHER", "AUTOMATION_ANALYTICS_LAST_ENTRIES",
+    "CLEANUP_HOST_METRICS_LAST_TS", "HOST_METRIC_SUMMARY_TASK_LAST_TS",
+    "NAMED_URL_FORMATS", "NAMED_URL_GRAPH_NODES",
+
+    # --- legacy noise from earlier list ---
+    "custom_virtualenv", "job_tags_no_ui", "skip_tags_no_ui",
 ]
 
 # Scalar FK fields: field name -> which id_maps key resolves it AS A FALLBACK.
@@ -533,6 +628,27 @@ def vaultize_secrets(value, name_parts):
         return v
 
     return walk(value, []), created
+
+
+def blank_encrypted_markers(value):
+    """Recursively walk value; every scalar equal to ENCRYPTED_MARKER becomes ''.
+    Used when secrets_as_variables=False, so the output stays reimport-safe
+    (matches infra.aap_configuration_extended.filetree_create's behavior of
+    emptying encrypted fields rather than emitting the literal marker string).
+
+    Previously, secrets_as_variables=False was a no-op on encrypted fields -
+    the "$encrypted$" markers were left as-is in the output YAML, which meant
+    reimporting that YAML would set every previously-encrypted field's value
+    to the literal 12-character string "$encrypted$", silently corrupting
+    credentials/passwords/tokens on the target. That's not a valid state for
+    ANY user; kept as ''-fill on this path with no opt-out."""
+    if isinstance(value, dict):
+        return {k: blank_encrypted_markers(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [blank_encrypted_markers(v) for v in value]
+    if value == ENCRYPTED_MARKER:
+        return ""
+    return value
 
 
 def build_auth_headers(module):
@@ -1000,6 +1116,8 @@ def main():
         secrets_as_variables=dict(type="bool", default=True),
         secrets_as_variables_prefix=dict(type="str", default="vaulted"),
         yaml_mark_unsafe_templates=dict(type="bool", default=True),
+        skip_managed_objects=dict(type="bool", default=True),
+        skip_system_usernames=dict(type="list", elements="str", default=[]),
     )
 
     module = AnsibleModule(
@@ -1080,6 +1198,10 @@ def main():
             # No per-object name for a settings dict - there's only one of it per
             # component, so the var name is just prefix_objecttype_field(s).
             cleaned, secret_vars = vaultize_secrets(cleaned, [secrets_prefix, object_type])
+        else:
+            # Empty out $encrypted$ markers rather than leave them literal -
+            # see blank_encrypted_markers docstring for why.
+            cleaned = blank_encrypted_markers(cleaned)
         cleaned, unsafe_tagged = mark_unsafe_templates(cleaned, enabled=unsafe_templates_on)
 
         if module.check_mode:
@@ -1136,6 +1258,33 @@ def main():
                 object_type=object_type,
             )
 
+    # --- Drop objects the target AAP will refuse to re-apply ---
+    # 'managed: true' == Red-Hat-shipped built-in (Platform Auditor role, Machine
+    # credential type, Default org, rh-certified remote, Local Database
+    # Authenticator, ...). Every one of these exists identically on the target
+    # AAP already; every write endpoint rejects re-applying them. References to
+    # them BY NAME (organization: "Default", credential_type: "Machine") still
+    # resolve on the target because the name is still there, so nothing
+    # downstream breaks - only the redundant create/update attempts do.
+    #
+    # skip_system_usernames catches things the AAP operator on OpenShift creates
+    # automatically (_token_service_user, aap_operator_service_account) which
+    # don't carry managed=true but are equally not ours to manage.
+    skip_managed = module.params["skip_managed_objects"]
+    skip_users = set(module.params.get("skip_system_usernames") or [])
+    skipped_managed_count = 0
+    skipped_username_count = 0
+    filtered_results = []
+    for o in raw_results:
+        if skip_managed and o.get("managed") is True:
+            skipped_managed_count += 1
+            continue
+        if skip_users and o.get("username") in skip_users:
+            skipped_username_count += 1
+            continue
+        filtered_results.append(o)
+    raw_results = filtered_results
+
     id_maps = module.params.get("id_maps") or {}
     cleaned_results = []
     unresolved_total = 0
@@ -1147,6 +1296,10 @@ def main():
             obj_name = _object_name_for_vars(cleaned)
             cleaned, secret_vars = vaultize_secrets(cleaned, [secrets_prefix, object_type, obj_name])
             all_secret_vars.extend(secret_vars)
+        else:
+            # Empty out $encrypted$ markers rather than leave them literal -
+            # see blank_encrypted_markers docstring for why.
+            cleaned = blank_encrypted_markers(cleaned)
         cleaned, unsafe_tagged = mark_unsafe_templates(cleaned, enabled=unsafe_templates_on)
         unsafe_tagged_total += unsafe_tagged
         cleaned_results.append(cleaned)
@@ -1183,6 +1336,8 @@ def main():
         secret_vars=all_secret_vars,
         secrets_replaced_count=len(all_secret_vars),
         unsafe_templates_tagged=unsafe_tagged_total,
+        skipped_managed_count=skipped_managed_count,
+        skipped_username_count=skipped_username_count,
     )
 
 
